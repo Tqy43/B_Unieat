@@ -1,0 +1,106 @@
+from django.db import models
+from datetime import time
+from django.conf import settings
+from django.contrib.auth.models import User
+
+# welcome页表模型
+class Welcome(models.Model):
+    # upload_to：图片上传后，放到media文件下下的welcome文件下
+    #必须安装pillow 使用pip3 install pillow
+    img = models.ImageField(upload_to='welcome', default='/welcome/01.png')
+    order = models.IntegerField()
+    # 这个字段以后不用传，会自动把上传图片的时间存到数据库
+    create_time = models.DateTimeField(auto_now=True)
+    is_delete = models.BooleanField(default=False)
+
+# 主页轮播图表模型
+class Banner(models.Model):
+    # 上传到 media/banners/
+    image = models.ImageField(upload_to='banners/')
+    order = models.PositiveIntegerField(default=0, help_text="排序，数字越大越靠前")
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-order', '-uploaded_at']  # order 值大排前，order相同按上传时间排
+
+    def __str__(self):
+        return f"Banner {self.id} (order={self.order})"
+
+# 食堂档口与菜品表
+class Canteen(models.Model):
+    name = models.CharField(max_length=50, verbose_name="食堂名称")
+    location = models.CharField(max_length=100, verbose_name="位置")
+    opening_hours = models.CharField(max_length=50, verbose_name="营业时间")  # 如 "07:00-20:00"
+    stall_count = models.PositiveIntegerField(default=0, verbose_name="档口数量")
+    image = models.ImageField(upload_to='canteen_images/', null=True, blank=True, verbose_name="食堂图片")
+
+    def __str__(self):
+        return self.name
+
+
+class Stall(models.Model):
+    name = models.CharField(max_length=100)
+    cuisine_type = models.CharField(max_length=50)
+    # 管理员手动开关（覆盖时间段）
+    manual_open = models.BooleanField(default=True, help_text="管理员手动控制营业状态")
+    # 营业时间段（一天内的两个区间，早/晚）
+    open_time_morning = models.TimeField(null=True, blank=True)
+    close_time_morning = models.TimeField(null=True, blank=True)
+    open_time_evening = models.TimeField(null=True, blank=True)
+    close_time_evening = models.TimeField(null=True, blank=True)
+
+    image = models.ImageField(upload_to='stall_images/', blank=True, null=True)
+    canteen = models.ForeignKey('Canteen', related_name='stalls', on_delete=models.CASCADE)
+    floor = models.CharField(max_length=10, blank=True, null=True)
+
+    def is_currently_open(self):
+        """结合时间段 & 管理员手动开关判断营业状态"""
+        from datetime import datetime
+        now = datetime.now().time()
+
+        if not self.manual_open:
+            return False
+
+        # 检查早市
+        if self.open_time_morning and self.close_time_morning:
+            if self.open_time_morning <= now <= self.close_time_morning:
+                return True
+
+        # 检查晚市
+        if self.open_time_evening and self.close_time_evening:
+            if self.open_time_evening <= now <= self.close_time_evening:
+                return True
+
+        return False
+
+    def __str__(self):
+        return f"{self.name}（{self.canteen.name}）"
+
+
+class Dish(models.Model):
+    stall = models.ForeignKey(Stall, on_delete=models.CASCADE, related_name='dishes')
+    name = models.CharField(max_length=50, verbose_name="菜品名称")
+    price = models.DecimalField(max_digits=5, decimal_places=2, verbose_name="价格")
+    tags = models.CharField(max_length=100, blank=True, verbose_name="标签")  # 逗号分隔，如 "麻辣,素食"
+    image = models.ImageField(upload_to='dish_images/', null=True, blank=True, verbose_name="菜品图片")
+
+    def __str__(self):
+        return f"{self.stall.name} - {self.name}"
+
+# 用户表
+# openid 唯一，作为用户在小程序侧的唯一标识
+class UserProfile(models.Model):
+    user = models.OneToOneField(
+        User, on_delete=models.CASCADE, related_name="profile"
+    )
+    openid = models.CharField(max_length=64, unique=True, db_index=True)
+    session_key = models.CharField(max_length=128, blank=True, default="")
+    nickname = models.CharField(max_length=64, blank=True, default="")
+    avatar_url = models.URLField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"[{self.id}] {self.openid}"
+
+
