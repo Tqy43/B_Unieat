@@ -2,6 +2,8 @@ from django.db import models
 from datetime import time
 from django.conf import settings
 from django.contrib.auth.models import User
+from decimal import Decimal, ROUND_HALF_UP
+from django.utils import timezone
 
 # welcome页表模型
 class Welcome(models.Model):
@@ -87,8 +89,86 @@ class Dish(models.Model):
     def __str__(self):
         return f"{self.stall.name} - {self.name}"
 
+def q2(value):
+    # 保证两位小数的量化
+    if value is None:
+        return Decimal("0.00")
+    if not isinstance(value, Decimal):
+        value = Decimal(str(value))
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+class ConsumptionRecord(models.Model):
+    """
+    一笔消费：属于某用户、某档口；包含若干 ConsumptionItem 明细
+    """
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="consumption_records")
+    stall = models.ForeignKey("unieat_v1.Stall", on_delete=models.PROTECT, related_name="consumption_records")
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    items_count = models.PositiveIntegerField(default=0)
+    notes = models.CharField(max_length=255, blank=True, default="")
+    consumed_at = models.DateTimeField(default=timezone.now)  # 用餐时间（前端可传）
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-consumed_at", "-id")
+        indexes = [
+            models.Index(fields=["user", "consumed_at"]),
+        ]
+
+    def __str__(self):
+        return f"Record#{self.id} user={self.user_id} stall={self.stall_id} total={self.total_amount}"
+
+    def recompute_totals(self):
+        agg = self.items.aggregate(
+            total=models.Sum("amount"),
+            count=models.Sum("quantity"),
+        )
+        self.total_amount = q2(agg["total"] or Decimal("0.00"))
+        # items_count 你可以理解为“行数”或“份数”，此处按份数汇总
+        self.items_count = int(agg["count"] or 0)
+        self.save(update_fields=["total_amount", "items_count", "updated_at"])
+
+class ConsumptionItem(models.Model):
+    """
+    消费明细：可以关联具体 dish，也可以是自定义项（无 dish）
+    """
+    record = models.ForeignKey(ConsumptionRecord, on_delete=models.CASCADE, related_name="items")
+    dish = models.ForeignKey("unieat_v1.Dish", on_delete=models.SET_NULL, null=True, blank=True, related_name="consumption_items")
+
+    # 快照字段，记录当时名称 & 单价，保证历史可追溯
+    name = models.CharField(max_length=100)
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    quantity = models.PositiveIntegerField(default=1)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("id",)
+
+    def __str__(self):
+        return f"Item#{self.id} record={self.record_id} {self.name} x{self.quantity} = {self.amount}"
+
+    def save(self, *args, **kwargs):
+        # 服务端兜底计算
+        self.unit_price = q2(self.unit_price)
+        self.amount = q2(self.unit_price * Decimal(self.quantity))
+        super().save(*args, **kwargs)
+
+
+
+
+
 # 用户表
 # openid 唯一，作为用户在小程序侧的唯一标识
+
+def user_avatar_path(instance, filename):
+    # 存储到 user_avatars/user_<id>.jpg
+    ext = filename.split('.')[-1]
+    return f"user_avatars/user_{instance.user.id}.{ext}"
+
 class UserProfile(models.Model):
     user = models.OneToOneField(
         User, on_delete=models.CASCADE, related_name="profile"
@@ -96,11 +176,42 @@ class UserProfile(models.Model):
     openid = models.CharField(max_length=64, unique=True, db_index=True)
     session_key = models.CharField(max_length=128, blank=True, default="")
     nickname = models.CharField(max_length=64, blank=True, default="")
-    avatar_url = models.URLField(blank=True, default="")
+    avatar = models.ImageField(upload_to=user_avatar_path, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f"[{self.id}] {self.openid}"
+
+class UserMealRecord(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="meal_records")
+    canteen = models.ForeignKey("Canteen", on_delete=models.SET_NULL, null=True, blank=True)
+    stall = models.ForeignKey("Stall", on_delete=models.SET_NULL, null=True, blank=True)
+    total_amount = models.DecimalField(max_digits=7, decimal_places=2, default=0)  # 本次总金额
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.user.username} - {self.stall.name if self.stall else '未知档口'} - {self.created_at}"
+
+
+class MealDishRecord(models.Model):
+    meal = models.ForeignKey(UserMealRecord, on_delete=models.CASCADE, related_name="dishes")
+    dish = models.ForeignKey("Dish", on_delete=models.SET_NULL, null=True, blank=True)
+    price = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+
+    def __str__(self):
+        return f"{self.dish.name if self.dish else '未知菜品'} ({self.price}元)"
+
+
+class MealExtraRecord(models.Model):
+    meal = models.ForeignKey(UserMealRecord, on_delete=models.CASCADE, related_name="extras")
+    desc = models.CharField(max_length=100)
+    amount = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+
+    def __str__(self):
+        return f"{self.desc} (+{self.amount}元)"
 
 

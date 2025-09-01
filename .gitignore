@@ -15,7 +15,7 @@ db.sqlite3
 /media
 
 # Environments
-.env
+unieat/.env
 .venv/
 venv/
 ENV/
@@ -31,3 +31,6 @@ env/
 
 # VSCode
 .vscode/
+
+
+media/

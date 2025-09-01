@@ -1,7 +1,21 @@
-from rest_framework import serializers
-from .models import Banner
-from .models import Canteen, Stall, Dish
+# 标准库导入
+from decimal import Decimal
 
+# DRF相关导入
+from rest_framework import serializers
+
+# 项目内部模型导入
+from .models import (
+    Banner,
+    Canteen, Stall, Dish,
+    UserProfile,
+    UserMealRecord, MealDishRecord, MealExtraRecord,
+    ConsumptionRecord, ConsumptionItem
+)
+
+# =======================
+# 轮播图
+# =======================
 class BannerSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
 
@@ -126,4 +140,194 @@ class CanteenDetailSerializer(serializers.ModelSerializer):
         if obj.image:
             return f"http://127.0.0.1:8000{obj.image.url}"
         return None
+
+# =======================
+# 用户
+# =======================
+
+class UserProfileSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = UserProfile
+        fields = ('nickname', 'avatar')
+        read_only_fields = ()
+
+    def validate_avatar_url(self, value):
+        # 允许为空（不授权时）
+        if value:
+            if not (value.startswith("http://") or value.startswith("https://")):
+                raise serializers.ValidationError("avatar_url must be an absolute http/https URL")
+        return value
+
+# =======================
+# 订餐（fake
+# =======================
+class MealDishRecordSerializer(serializers.ModelSerializer):
+    dish_name = serializers.CharField(source="dish.name", read_only=True)
+
+    class Meta:
+        model = MealDishRecord
+        fields = ["id", "dish", "dish_name", "price"]
+
+
+class MealExtraRecordSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MealExtraRecord
+        fields = ["id", "desc", "amount"]
+
+
+class UserMealRecordSerializer(serializers.ModelSerializer):
+    stall_name = serializers.CharField(source="stall.name", read_only=True)
+    canteen_name = serializers.CharField(source="canteen.name", read_only=True)
+
+    dishes = MealDishRecordSerializer(many=True, required=False)
+    extras = MealExtraRecordSerializer(many=True, required=False)
+
+    class Meta:
+        model = UserMealRecord
+        fields = [
+            "id", "canteen", "canteen_name", "stall", "stall_name",
+            "total_amount", "created_at", "dishes", "extras"
+        ]
+        read_only_fields = ["id", "created_at", "canteen_name", "stall_name"]
+
+    def create(self, validated_data):
+        dishes_data = validated_data.pop("dishes", [])
+        extras_data = validated_data.pop("extras", [])
+
+        meal = UserMealRecord.objects.create(**validated_data)
+
+        for dish_data in dishes_data:
+            MealDishRecord.objects.create(meal=meal, **dish_data)
+        for extra_data in extras_data:
+            MealExtraRecord.objects.create(meal=meal, **extra_data)
+
+        return meal
+
+
+class ConsumptionItemInputSerializer(serializers.Serializer):
+    """
+    创建时使用的输入明细：
+    - 如果是菜品：传 dish_id、quantity（unit_price 可不传，以数据库为准）
+    - 如果是自定义项：不传 dish_id，传 name + unit_price + quantity
+    """
+    dish_id = serializers.IntegerField(required=False, allow_null=True)
+    name = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    unit_price = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
+    quantity = serializers.IntegerField(min_value=1, default=1)
+
+    def validate(self, data):
+        dish_id = data.get("dish_id")
+        name = data.get("name")
+        unit_price = data.get("unit_price")
+
+        if dish_id:
+            # 菜品项：name/unit_price 可不传
+            return data
+        else:
+            # 自定义项：必须有 name + unit_price
+            if not name:
+                raise serializers.ValidationError("自定义项必须提供 name")
+            if unit_price is None:
+                raise serializers.ValidationError("自定义项必须提供 unit_price")
+            return data
+
+class ConsumptionItemSerializer(serializers.ModelSerializer):
+    dish = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ConsumptionItem
+        fields = ("id", "dish", "name", "unit_price", "quantity", "amount")
+
+    def get_dish(self, obj):
+        if not obj.dish:
+            return None
+        return {
+            "id": obj.dish_id,
+            "name": obj.dish.name,
+        }
+
+class ConsumptionRecordSerializer(serializers.ModelSerializer):
+    stall = serializers.SerializerMethodField()
+    items = ConsumptionItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = ConsumptionRecord
+        fields = ("id", "stall", "total_amount", "items_count", "notes", "consumed_at", "items", "created_at")
+
+    def get_stall(self, obj):
+        return {
+            "id": obj.stall_id,
+            "name": obj.stall.name,
+            "canteen": {
+                "id": obj.stall.canteen_id,
+                "name": obj.stall.canteen.name,
+            },
+        }
+
+class ConsumptionRecordCreateSerializer(serializers.Serializer):
+    stall_id = serializers.IntegerField()
+    consumed_at = serializers.DateTimeField(required=False)
+    notes = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    items = ConsumptionItemInputSerializer(many=True)
+
+    def validate_stall_id(self, value):
+        if not Stall.objects.filter(id=value).exists():
+            raise serializers.ValidationError("无效的档口 ID")
+        return value
+
+    def validate(self, data):
+        items = data.get("items") or []
+        if not items:
+            raise serializers.ValidationError("至少需要一条明细 items")
+        return data
+
+    def create(self, validated_data):
+        user = self.context["request"].user
+        stall = Stall.objects.get(id=validated_data["stall_id"])
+        consumed_at = validated_data.get("consumed_at")
+        notes = validated_data.get("notes", "")
+
+        record = ConsumptionRecord.objects.create(
+            user=user,
+            stall=stall,
+            consumed_at=consumed_at or None,
+            notes=notes,
+        )
+
+        # 逐条创建明细（服务端计算单价/金额）
+        for it in validated_data["items"]:
+            dish_id = it.get("dish_id")
+            quantity = it.get("quantity", 1)
+
+            if dish_id:
+                dish = Dish.objects.select_related("stall").get(id=dish_id)
+                # 校验菜品归属
+                if dish.stall_id != stall.id:
+                    raise serializers.ValidationError(f"菜品 {dish.id} 不属于当前档口 {stall.id}")
+                name = dish.name
+                unit_price = dish.price  # 以数据库为准
+                ConsumptionItem.objects.create(
+                    record=record,
+                    dish=dish,
+                    name=name,
+                    unit_price=unit_price,
+                    quantity=quantity,
+                )
+            else:
+                # 自定义项
+                name = it["name"]
+                unit_price = it["unit_price"]
+                ConsumptionItem.objects.create(
+                    record=record,
+                    dish=None,
+                    name=name,
+                    unit_price=unit_price,
+                    quantity=quantity,
+                )
+
+        # 汇总计算总价与总份数
+        record.recompute_totals()
+        return record
+
 

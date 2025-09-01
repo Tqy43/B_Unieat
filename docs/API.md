@@ -28,3 +28,11 @@
 | **DishDetailAPIView**    | GET  | `/unieat/api/dish/{id}/`    | 返回单个菜品的完整信息，包含：菜品名、价格、图片、所属档口、所属食堂等。                    |
 | **StallDetailAPIView**   | GET  | `/unieat/api/stall/{id}/`   | 返回单个档口详情，包含：档口名、楼层、所属食堂、档口图片、所有菜品（简化信息：id/名称/价格/图片）、均价。 |
 | **CanteenDetailAPIView** | GET  | `/unieat/api/canteen/{id}/` | 返回单个食堂详情，包含：食堂名、图片、所有档口（id/名称/楼层/图片），可在前端按楼层筛选显示。       |
+
+## 4.用户信息
+| API                  | 方法   | 请求数据                                                     | 返回数据                     | 说明                |
+|----------------------|------|----------------------------------------------------------|--------------------------|-------------------|
+| `/api/user/login/`   | POST | `{code: "wx.login() 返回的 code"}`                          | `{access, refresh}`      | 登录，返回 JWT         |
+| `/api/user/me/`      | GET  | Header: `Authorization: Bearer <access>`                 | `{id, username, openid}` | 校验 token 是否有效     |
+| `/api/user/profile/` | GET  | Header: `Authorization`                                  | `{nickname, avatar_url}` | 获取当前用户资料          |
+| `/api/user/profile/` | POST | Header: `Authorization` + Body: `{nickname, avatar_url}` | `{nickname, avatar_url}` | 更新用户资料（仅传需要修改的字段） |

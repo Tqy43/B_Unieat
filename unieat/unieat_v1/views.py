@@ -1,29 +1,48 @@
-from django.http import JsonResponse
-from .models import Welcome
+# 标准库导入
+import os
+import requests
 from datetime import datetime
 from random import sample
 
+# Django核心模块导入
+from django.http import JsonResponse
+from django.conf import settings
+from django.db import transaction
+from django.contrib.auth.models import User
+from django.utils.dateparse import parse_date
+from django.db.models import Q
+
+# DRF相关模块导入
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser
-from rest_framework import viewsets
+from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.generics import RetrieveAPIView
-from .models import Banner
-from .models import Canteen, Stall, Dish
-from .serializers import BannerSerializer
-from .serializers import CanteenSerializer, StallSerializer, DishSerializer
-from .serializers import StallDetailSerializer,CanteenDetailSerializer
-
-from django.contrib.auth.models import User
-from django.db import transaction
-from rest_framework import status, permissions
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.serializers import Serializer, CharField
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import UserProfile
+# 项目内部模型导入
+from .models import (
+    Welcome, Banner, Canteen, Stall, Dish,
+    UserProfile, UserMealRecord,ConsumptionRecord
+)
+
+# 项目内部序列化器导入
+from .serializers import (
+    BannerSerializer,
+    CanteenSerializer, StallSerializer, DishSerializer,
+    StallDetailSerializer, CanteenDetailSerializer,
+    UserProfileSerializer, UserMealRecordSerializer,
+    ConsumptionRecordSerializer,
+    ConsumptionRecordCreateSerializer
+)
+
+# 项目内部工具导入
 from .utils.wechat import jscode2session, WechatAuthError
+
+
 
 # 开屏广告页
 def welcome(request):
@@ -137,6 +156,38 @@ class StallViewSet(viewsets.ModelViewSet):
     queryset = Stall.objects.all()
     serializer_class = StallSerializer
 
+    def list(self, request, *args, **kwargs):
+        canteen_id = request.query_params.get("canteen_id")
+        floor = request.query_params.get("floor")
+
+        qs = self.queryset
+        if canteen_id:
+            qs = qs.filter(canteen_id=canteen_id)
+        if floor:
+            qs = qs.filter(floor=floor)
+
+        data = []
+        for stall in qs:
+            dishes = stall.dishes.all()
+            avg_price = (
+                sum([float(d.price) for d in dishes]) / len(dishes)
+                if dishes else 0.0
+            )
+            data.append({
+                "id": stall.id,
+                "name": stall.name,
+                "floor": stall.floor,
+                "image": stall.image.url if stall.image else "",
+                "avg_price": "%.2f" % avg_price,
+                "canteen": {
+                    "id": stall.canteen.id,
+                    "name": stall.canteen.name,
+                    "image": stall.canteen.image.url if stall.canteen.image else ""
+                }
+            })
+
+        return Response(data)
+
 
 class DishViewSet(viewsets.ModelViewSet):
     queryset = Dish.objects.all()
@@ -234,3 +285,124 @@ class MeView(APIView):
             "username": u.username,
             "openid": getattr(profile, "openid", ""),
         })
+
+class UserProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        profile = getattr(request.user, "profile", None)
+        if not profile:
+            return Response({"detail": "User profile not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = UserProfileSerializer(profile, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        profile = getattr(request.user, "profile", None)
+        if not profile:
+            return Response({"detail": "User profile not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        nickname = request.data.get("nickname", profile.nickname)
+        avatar_url = request.data.get("avatar_url")
+
+        profile.nickname = nickname
+
+        # ✅ 如果传了微信头像 URL，下载并保存到 MEDIA_ROOT
+        if avatar_url:
+            try:
+                r = requests.get(avatar_url, stream=True, timeout=5)
+                if r.status_code == 200:
+                    ext = avatar_url.split(".")[-1].split("?")[0]
+                    filename = f"user_{profile.user.id}.{ext}"
+                    save_dir = os.path.join(settings.MEDIA_ROOT, "user_avatars")
+                    os.makedirs(save_dir, exist_ok=True)
+                    save_path = os.path.join(save_dir, filename)
+
+                    # 删除旧头像
+                    if profile.avatar and os.path.exists(profile.avatar.path):
+                        os.remove(profile.avatar.path)
+
+                    with open(save_path, "wb") as f:
+                        for chunk in r.iter_content(1024):
+                            f.write(chunk)
+
+                    profile.avatar.name = f"user_avatars/{filename}"
+            except Exception as e:
+                print("下载头像失败:", e)
+
+        profile.save()
+        serializer = UserProfileSerializer(profile, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        return self.post(request)
+
+# 订餐（fake
+class UserMealRecordView(APIView):
+    """
+    GET  /api/user/meal_records/   -> 获取当前用户的就餐记录（含菜品+额外支出）
+    POST /api/user/meal_records/   -> 新增一次就餐记录
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        records = UserMealRecord.objects.filter(user=request.user).order_by("-created_at")
+        serializer = UserMealRecordSerializer(records, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        serializer = UserMealRecordSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(user=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class IsOwnerOnly(permissions.BasePermission):
+    """仅允许访问自己的消费记录"""
+    def has_object_permission(self, request, view, obj):
+        return obj.user_id == request.user.id
+
+class ConsumptionRecordViewSet(viewsets.ModelViewSet):
+    """
+    /api/consumptions/
+    """
+    queryset = ConsumptionRecord.objects.all()
+    permission_classes = [permissions.IsAuthenticated, IsOwnerOnly]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = ConsumptionRecord.objects.filter(user=user).select_related("stall", "stall__canteen").prefetch_related("items", "items__dish")
+
+        # 过滤：date_from, date_to, canteen_id, stall_id
+        df = self.request.query_params.get("date_from")
+        dt = self.request.query_params.get("date_to")
+        canteen_id = self.request.query_params.get("canteen_id")
+        stall_id = self.request.query_params.get("stall_id")
+
+        if df:
+            qs = qs.filter(consumed_at__date__gte=parse_date(df))
+        if dt:
+            qs = qs.filter(consumed_at__date__lte=parse_date(dt))
+        if canteen_id:
+            qs = qs.filter(stall__canteen_id=canteen_id)
+        if stall_id:
+            qs = qs.filter(stall_id=stall_id)
+
+        return qs
+
+    def get_serializer_class(self):
+        if self.action in ["create"]:
+            return ConsumptionRecordCreateSerializer
+        return ConsumptionRecordSerializer
+
+    def perform_create(self, serializer):
+        # create() 里已经使用 request.user 并完成了合计；这里留空
+        serializer.save()
+
+    def destroy(self, request, *args, **kwargs):
+        # 仍然会走 IsOwnerOnly 限制
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=False, methods=["get"])
+    def ping(self, request):
+        return Response({"ok": True})
