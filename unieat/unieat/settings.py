@@ -13,8 +13,11 @@ env = environ.Env(
     ALLOWED_HOSTS=(list, []),
 )
 
-# 读取 .env 文件
-environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
+# 读取 .env 文件，优先读取生产环境配置
+env_file = os.path.join(BASE_DIR, ".env")
+if os.path.exists(os.path.join(BASE_DIR, "env.production")):
+    env_file = os.path.join(BASE_DIR, "env.production")
+environ.Env.read_env(env_file)
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = env('SECRET_KEY', default='django-insecure-@y(5bl156qlr(9tiga-1_w-eqhdll!fo@tl*42z6pt%hy3t=du')
@@ -105,12 +108,27 @@ USE_I18N = True
 USE_TZ = env('USE_TZ', default=False)
 
 # Static files (CSS, JavaScript, Images)
-STATIC_URL = env('STATIC_URL', default='static/')
+STATIC_URL = env('STATIC_URL', default='/static/')
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+# 静态文件查找目录
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, 'static'),
+]
 
 # Media files
 MEDIA_URL = env('MEDIA_URL', default='/media/')
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media/')
+
+# 阿里云OSS配置
+OSS_ACCESS_KEY_ID = env('OSS_ACCESS_KEY_ID', default='')
+OSS_ACCESS_KEY_SECRET = env('OSS_ACCESS_KEY_SECRET', default='')
+OSS_BUCKET_NAME = env('OSS_BUCKET_NAME', default='unieat-media')
+OSS_ENDPOINT = env('OSS_ENDPOINT', default='oss-cn-hangzhou.aliyuncs.com')
+OSS_REGION = env('OSS_REGION', default='cn-hangzhou')
+
+# 是否使用阿里云OSS存储媒体文件
+USE_OSS = env('USE_OSS', default=False, cast=bool)
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -151,6 +169,12 @@ EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 
 # 日志配置
+LOG_LEVEL = env('LOG_LEVEL', default='INFO')
+LOG_FILE_PATH = env('LOG_FILE_PATH', default=os.path.join(BASE_DIR, 'logs'))
+
+# 确保日志目录存在
+os.makedirs(LOG_FILE_PATH, exist_ok=True)
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -166,9 +190,19 @@ LOGGING = {
     },
     'handlers': {
         'file': {
-            'level': 'INFO',
-            'class': 'logging.FileHandler',
-            'filename': os.path.join(BASE_DIR, 'logs', 'django.log'),
+            'level': LOG_LEVEL,
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': os.path.join(LOG_FILE_PATH, 'django.log'),
+            'maxBytes': 1024*1024*10,  # 10MB
+            'backupCount': 5,
+            'formatter': 'verbose',
+        },
+        'error_file': {
+            'level': 'ERROR',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': os.path.join(LOG_FILE_PATH, 'error.log'),
+            'maxBytes': 1024*1024*10,  # 10MB
+            'backupCount': 5,
             'formatter': 'verbose',
         },
         'console': {
@@ -183,12 +217,12 @@ LOGGING = {
     },
     'loggers': {
         'django': {
-            'handlers': ['file', 'console'],
-            'level': 'INFO',
+            'handlers': ['file', 'error_file', 'console'],
+            'level': LOG_LEVEL,
             'propagate': False,
         },
         'unieat_v1': {
-            'handlers': ['file', 'console'],
+            'handlers': ['file', 'error_file', 'console'],
             'level': 'DEBUG',
             'propagate': False,
         },

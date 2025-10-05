@@ -1,0 +1,35 @@
+# Systemd服务配置文件
+# 放置位置: /etc/systemd/system/unieat.service
+# 使用方法: sudo systemctl enable unieat && sudo systemctl start unieat
+
+[Unit]
+Description=UniEat Django Application
+After=network.target mysql.service
+Requires=mysql.service
+
+[Service]
+Type=exec
+User=www-data
+Group=www-data
+WorkingDirectory=/path/to/your/unieat/project
+Environment=PATH=/path/to/your/unieat/project/venv/bin
+ExecStart=/path/to/your/unieat/project/venv/bin/gunicorn --config deploy/gunicorn/gunicorn.conf.py unieat.wsgi:application
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=always
+RestartSec=10
+
+# 安全配置
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/path/to/your/unieat/project/logs
+ReadWritePaths=/path/to/your/unieat/project/media
+
+# 日志配置
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=unieat
+
+[Install]
+WantedBy=multi-user.target
