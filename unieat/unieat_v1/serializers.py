@@ -9,8 +9,9 @@ from .models import (
     Banner,
     Canteen, Stall, Dish,
     UserProfile,
-    UserMealRecord, MealDishRecord, MealExtraRecord,
-    ConsumptionRecord, ConsumptionItem
+    MealExtraRecord,
+    ConsumptionRecord, ConsumptionItem,
+    Feedback
 )
 
 # =======================
@@ -41,7 +42,10 @@ class CanteenSerializer(serializers.ModelSerializer):
 
     def get_image(self, obj):
         if obj.image:
-            return f"http://127.0.0.1:8000{obj.image.url}"
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.image.url)
+            return obj.image.url
         return None
 
 
@@ -51,25 +55,32 @@ class StallSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Stall
-        fields = ['id', 'name', 'canteen', 'image']
+        fields = ['id', 'name', 'canteen', 'image','type']
 
     def get_image(self, obj):
         if obj.image:
-            return f"http://127.0.0.1:8000{obj.image.url}"
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.image.url)
+            return obj.image.url
         return None
 
 
 class DishSerializer(serializers.ModelSerializer):
     stall = StallSerializer(read_only=True)  # 嵌套 Stall（里面有 Canteen）
+    stall_name = serializers.CharField(source='stall.name', read_only=True)
     image = serializers.SerializerMethodField()
 
     class Meta:
         model = Dish
-        fields = ['id', 'name', 'price', 'tags', 'image', 'stall']
+        fields = ['id', 'name', 'price', 'tags', 'image', 'stall','stall_name', 'type']
 
     def get_image(self, obj):
         if obj.image:
-            return f"http://127.0.0.1:8000{obj.image.url}"
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.image.url)
+            return obj.image.url
         return None
 
 
@@ -86,7 +97,10 @@ class SimpleDishSerializer(serializers.ModelSerializer):
 
     def get_image(self, obj):
         if obj.image:
-            return f"http://127.0.0.1:8000{obj.image.url}"
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.image.url)
+            return obj.image.url
         return None
 
 
@@ -98,7 +112,7 @@ class StallDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Stall
-        fields = ['id', 'name', 'floor', 'canteen', 'dishes', 'average_price','image']
+        fields = ['id', 'name', 'floor', 'canteen', 'dishes', 'average_price','image','type']
 
     def get_average_price(self, obj):
         dishes = obj.dishes.all()
@@ -109,7 +123,10 @@ class StallDetailSerializer(serializers.ModelSerializer):
 
     def get_image(self, obj):
         if obj.image:
-            return f"http://127.0.0.1:8000{obj.image.url}"
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.image.url)
+            return obj.image.url
         return None
 
 # =======================
@@ -124,7 +141,10 @@ class SimpleStallSerializer(serializers.ModelSerializer):
 
     def get_image(self, obj):
         if obj.image:
-            return f"http://127.0.0.1:8000{obj.image.url}"
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.image.url)
+            return obj.image.url
         return None
 
 
@@ -138,7 +158,10 @@ class CanteenDetailSerializer(serializers.ModelSerializer):
 
     def get_image(self, obj):
         if obj.image:
-            return f"http://127.0.0.1:8000{obj.image.url}"
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.image.url)
+            return obj.image.url
         return None
 
 # =======================
@@ -149,7 +172,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = UserProfile
-        fields = ('nickname', 'avatar')
+        fields = ('nickname', 'avatar', 'budget')
         read_only_fields = ()
 
     def validate_avatar_url(self, value):
@@ -159,50 +182,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("avatar_url must be an absolute http/https URL")
         return value
 
-# =======================
-# 订餐（fake
-# =======================
-class MealDishRecordSerializer(serializers.ModelSerializer):
-    dish_name = serializers.CharField(source="dish.name", read_only=True)
-
-    class Meta:
-        model = MealDishRecord
-        fields = ["id", "dish", "dish_name", "price"]
-
-
-class MealExtraRecordSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = MealExtraRecord
-        fields = ["id", "desc", "amount"]
-
-
-class UserMealRecordSerializer(serializers.ModelSerializer):
-    stall_name = serializers.CharField(source="stall.name", read_only=True)
-    canteen_name = serializers.CharField(source="canteen.name", read_only=True)
-
-    dishes = MealDishRecordSerializer(many=True, required=False)
-    extras = MealExtraRecordSerializer(many=True, required=False)
-
-    class Meta:
-        model = UserMealRecord
-        fields = [
-            "id", "canteen", "canteen_name", "stall", "stall_name",
-            "total_amount", "created_at", "dishes", "extras"
-        ]
-        read_only_fields = ["id", "created_at", "canteen_name", "stall_name"]
-
-    def create(self, validated_data):
-        dishes_data = validated_data.pop("dishes", [])
-        extras_data = validated_data.pop("extras", [])
-
-        meal = UserMealRecord.objects.create(**validated_data)
-
-        for dish_data in dishes_data:
-            MealDishRecord.objects.create(meal=meal, **dish_data)
-        for extra_data in extras_data:
-            MealExtraRecord.objects.create(meal=meal, **extra_data)
-
-        return meal
 
 
 class ConsumptionItemInputSerializer(serializers.Serializer):
@@ -250,15 +229,22 @@ class ConsumptionItemSerializer(serializers.ModelSerializer):
 class ConsumptionRecordSerializer(serializers.ModelSerializer):
     stall = serializers.SerializerMethodField()
     items = ConsumptionItemSerializer(many=True, read_only=True)
+    stallsName = serializers.CharField(source='stall.name', read_only=True)
+    canteenInfo = serializers.CharField(source='stall.canteen.name', read_only=True)
+    remark = serializers.CharField(source='notes', read_only=True)
 
     class Meta:
         model = ConsumptionRecord
-        fields = ("id", "stall", "total_amount", "items_count", "notes", "consumed_at", "items", "created_at")
+        # fields = ("id", "stallsName", "canteenInfo", "total_amount", "items_count", "notes", "consumed_at", "items", "created_at", "remark")
+        #fields = '__all__'
+        fields = ("id", "stall", "stallsName", "canteenInfo", "total_amount", "items_count", "notes", "consumed_at", "items", "created_at", "remark")
+
 
     def get_stall(self, obj):
         return {
             "id": obj.stall_id,
             "name": obj.stall.name,
+            "image": obj.stall.image.url if obj.stall.image else None,
             "canteen": {
                 "id": obj.stall.canteen_id,
                 "name": obj.stall.canteen.name,
@@ -283,15 +269,17 @@ class ConsumptionRecordCreateSerializer(serializers.Serializer):
         return data
 
     def create(self, validated_data):
+        from django.utils import timezone
+        
         user = self.context["request"].user
         stall = Stall.objects.get(id=validated_data["stall_id"])
-        consumed_at = validated_data.get("consumed_at")
+        consumed_at = validated_data.get("consumed_at") or timezone.now()
         notes = validated_data.get("notes", "")
 
         record = ConsumptionRecord.objects.create(
             user=user,
             stall=stall,
-            consumed_at=consumed_at or None,
+            consumed_at=consumed_at,
             notes=notes,
         )
 
@@ -329,5 +317,47 @@ class ConsumptionRecordCreateSerializer(serializers.Serializer):
         # 汇总计算总价与总份数
         record.recompute_totals()
         return record
+
+# =======================
+# 统计
+# =======================
+class MealStatisticsSerializer(serializers.Serializer):
+    total_amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    by_canteen = serializers.ListField()
+    by_stall = serializers.ListField()
+    by_dish = serializers.ListField()
+    extra_expenses = serializers.ListField()
+
+class TopSalesSerializer(serializers.Serializer):
+    name = serializers.CharField()
+    value = serializers.DecimalField(max_digits=10, decimal_places=2)
+ 
+class ConsumptionSummarySerializer(serializers.Serializer):
+    consumptionToday = serializers.DecimalField(max_digits=10, decimal_places=2)
+    consumptionWeek = serializers.DecimalField(max_digits=10, decimal_places=2)
+    consumptionMonth = serializers.DecimalField(max_digits=10, decimal_places=2)
+    totalConsumption = serializers.DecimalField(max_digits=10, decimal_places=2)
+ 
+
+# =======================
+# 反馈
+# =======================
+
+class FeedbackSerializer(serializers.ModelSerializer):
+    """
+    用于验证和序列化反馈数据
+    """
+    class Meta:
+        model = Feedback
+        fields = ["id", "description", "contact", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+
+
+
+
+
+
+
 
 

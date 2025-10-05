@@ -55,6 +55,14 @@ class Stall(models.Model):
     canteen = models.ForeignKey('Canteen', related_name='stalls', on_delete=models.CASCADE)
     floor = models.CharField(max_length=10, blank=True, null=True)
 
+    # 档口类型
+    type = models.CharField(
+        max_length=20,
+        choices=[("fixed", "固定价格"), ("custom", "自定义金额")],
+        default="fixed",
+        help_text="档口价格模式：固定价格 / 自定义金额"
+    )
+
     def is_currently_open(self):
         """结合时间段 & 管理员手动开关判断营业状态"""
         from datetime import datetime
@@ -80,12 +88,16 @@ class Stall(models.Model):
 
 
 class Dish(models.Model):
+    TYPE_CHOICES = (
+        ("normal", "普通菜品"),
+        ("custom", "自选/称重"),
+    )
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE, related_name='dishes')
     name = models.CharField(max_length=50, verbose_name="菜品名称")
     price = models.DecimalField(max_digits=5, decimal_places=2, verbose_name="价格")
     tags = models.CharField(max_length=100, blank=True, verbose_name="标签")  # 逗号分隔，如 "麻辣,素食"
     image = models.ImageField(upload_to='dish_images/', null=True, blank=True, verbose_name="菜品图片")
-
+    type = models.CharField(max_length=20, choices=TYPE_CHOICES, default="normal")
     def __str__(self):
         return f"{self.stall.name} - {self.name}"
 
@@ -115,6 +127,7 @@ class ConsumptionRecord(models.Model):
         ordering = ("-consumed_at", "-id")
         indexes = [
             models.Index(fields=["user", "consumed_at"]),
+            models.Index(fields=["stall"]),
         ]
 
     def __str__(self):
@@ -177,41 +190,49 @@ class UserProfile(models.Model):
     session_key = models.CharField(max_length=128, blank=True, default="")
     nickname = models.CharField(max_length=64, blank=True, default="")
     avatar = models.ImageField(upload_to=user_avatar_path, blank=True, null=True)
+    budget = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f"[{self.id}] {self.openid}"
 
-class UserMealRecord(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="meal_records")
-    canteen = models.ForeignKey("Canteen", on_delete=models.SET_NULL, null=True, blank=True)
-    stall = models.ForeignKey("Stall", on_delete=models.SET_NULL, null=True, blank=True)
-    total_amount = models.DecimalField(max_digits=7, decimal_places=2, default=0)  # 本次总金额
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-
-    def __str__(self):
-        return f"{self.user.username} - {self.stall.name if self.stall else '未知档口'} - {self.created_at}"
-
-
-class MealDishRecord(models.Model):
-    meal = models.ForeignKey(UserMealRecord, on_delete=models.CASCADE, related_name="dishes")
-    dish = models.ForeignKey("Dish", on_delete=models.SET_NULL, null=True, blank=True)
-    price = models.DecimalField(max_digits=6, decimal_places=2, default=0)
-
-    def __str__(self):
-        return f"{self.dish.name if self.dish else '未知菜品'} ({self.price}元)"
+# 用于统计
 
 
 class MealExtraRecord(models.Model):
-    meal = models.ForeignKey(UserMealRecord, on_delete=models.CASCADE, related_name="extras")
+    meal = models.ForeignKey(ConsumptionRecord, on_delete=models.CASCADE, related_name="extras")
     desc = models.CharField(max_length=100)
     amount = models.DecimalField(max_digits=6, decimal_places=2, default=0)
 
     def __str__(self):
         return f"{self.desc} (+{self.amount}元)"
+
+# ... existing code ...
+
+
+
+# 用于反馈
+
+class Feedback(models.Model):
+    """
+    用户反馈模型（匿名提交）
+    """
+    description = models.TextField(verbose_name="问题描述")  # 必填，用户反馈的内容
+    contact = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        verbose_name="联系方式"
+    )  # 选填，邮箱/微信号/手机号等
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="提交时间")
+
+    class Meta:
+        verbose_name = "用户反馈"
+        verbose_name_plural = "用户反馈"
+
+    def __str__(self):
+        return f"反馈[{self.id}] - {self.description[:20]}..."
+
 
 

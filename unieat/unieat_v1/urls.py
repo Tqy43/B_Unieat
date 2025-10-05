@@ -7,8 +7,14 @@ from .views import (
     CanteenViewSet, StallViewSet, DishViewSet,
     DishDetailAPIView, StallDetailAPIView, CanteenDetailAPIView,
     WechatLoginView, MeView,
-    UserProfileView,UserMealRecordView,
-    ConsumptionRecordViewSet
+    UserProfileView,
+    ConsumptionRecordViewSet,
+    ConsumptionSummaryView,
+    TopSalesView,
+    ConsumptionTrendView,
+    ConsumptionRecordsView,
+    ConsumptionRecordsDeleteView,
+    FeedbackView
 )
 
 # 用 DRF 的路由器注册 ViewSet
@@ -40,8 +46,13 @@ urlpatterns = [
     path('user/me/', MeView.as_view(), name='user-me'),
     path('user/profile/', UserProfileView.as_view(), name='user-profile'),
 
-    # 订餐（fake）
-    path("user/meal_records/", UserMealRecordView.as_view(), name="user-meal-records"),
-    path("", include(router.urls)),
+    # 统计
+    path('consumption/summary/', ConsumptionSummaryView.as_view(), name='consumption-summary'),
+    path('shops/top_sales/', TopSalesView.as_view(), name='top-sales'),
+    path('consumption/trend/', ConsumptionTrendView.as_view(), name='consumption-trend'),
+    path('consumption/records/', ConsumptionRecordsView.as_view(), name='consumption-records'),
+    path('consumption/delete/', ConsumptionRecordsDeleteView.as_view(), name='consumption-records-delete'),
 
+    # 反馈
+    path("feedback/", FeedbackView.as_view(), name="feedback"),
 ]

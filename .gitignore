@@ -1,36 +1,204 @@
-# Python
-*.pyc
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyo
-*.pyd
-*.env
-*.sqlite3
-*.log
-*.pot
 *.py[cod]
+*$py.class
 
-# Django
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
 db.sqlite3
-/staticfiles
-/media
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pipenv
+#Pipfile.lock
+
+# poetry
+#poetry.lock
+
+# pdm
+#pdm.lock
+.pdm.toml
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
 
 # Environments
-unieat/.env
-.venv/
+.env
+.venv
+env/
 venv/
 ENV/
-env/
-*.egg-info/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
 
 # PyCharm
 .idea/
 *.iml
+*.ipr
+*.iws
 
-# macOS
-.DS_Store
-
-# VSCode
+# VS Code
 .vscode/
 
+# Django specific
+# 静态文件收集目录
+static/
 
-media/
+# 数据库文件
+*.db
+*.sqlite3
+
+# 日志文件
+*.log
+logs/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Node.js (if using frontend tools)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Project specific
+# 临时查询文件
+query
+*.sql
+*.dump
+
+# 开发环境文件
+.env.local
+.env.development
+.env.test
+.env.production
+
+# 备份文件
+*.bak
+*.backup
+
+# 测试文件
+test_data/
+fixtures/
+*.json.bak
+
+# 媒体文件 - 保留示例图片，忽略用户上传的文件
+media/user_avatars/*
+!media/user_avatars/.gitkeep
+media/uploads/*
+!media/uploads/.gitkeep
