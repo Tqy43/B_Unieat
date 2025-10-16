@@ -22,7 +22,8 @@ SECRET_KEY = env('SECRET_KEY', default='django-insecure-@y(5bl156qlr(9tiga-1_w-e
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env('DEBUG')
 
-ALLOWED_HOSTS = env('ALLOWED_HOSTS')
+# 真机调试需要添加内网IP
+ALLOWED_HOSTS = env('ALLOWED_HOSTS') if env('ALLOWED_HOSTS') else ['127.0.0.1', 'localhost', '10.199.203.88', 'unieat.top']
 
 # Application definition
 INSTALLED_APPS = [
