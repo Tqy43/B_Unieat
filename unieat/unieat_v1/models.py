@@ -191,6 +191,7 @@ class UserProfile(models.Model):
     nickname = models.CharField(max_length=64, blank=True, default="")
     avatar = models.ImageField(upload_to=user_avatar_path, blank=True, null=True)
     budget = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    points = models.PositiveIntegerField(default=0, verbose_name="积分")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -234,5 +235,234 @@ class Feedback(models.Model):
     def __str__(self):
         return f"反馈[{self.id}] - {self.description[:20]}..."
 
+
+# 签到记录模型
+class CheckInRecord(models.Model):
+    """用户签到记录"""
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, 
+        on_delete=models.CASCADE, 
+        related_name="checkin_records",
+        verbose_name="用户"
+    )
+    checkin_date = models.DateField(default=timezone.now, verbose_name="签到日期")
+    checkin_time = models.DateTimeField(default=timezone.now, verbose_name="签到时间")
+    consecutive_days = models.PositiveIntegerField(default=1, verbose_name="连续签到天数")
+    points_earned = models.PositiveIntegerField(default=0, verbose_name="本次获得积分")
+    
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    
+    class Meta:
+        unique_together = ['user', 'checkin_date']  # 确保每天只能签到一次
+        ordering = ['-checkin_date', '-checkin_time']
+        verbose_name = "签到记录"
+        verbose_name_plural = "签到记录"
+        indexes = [
+            models.Index(fields=['user', 'checkin_date']),
+        ]
+    
+    def __str__(self):
+        return f"签到[{self.id}] 用户={self.user_id} 日期={self.checkin_date} 连续={self.consecutive_days}天"
+
+
+# =======================
+# 积分商城相关模型
+# =======================
+
+def avatar_upload_path(instance, filename):
+    """头像图片上传路径"""
+    ext = filename.split('.')[-1]
+    return f"avatars/avatar_{instance.id}.{ext}"
+
+
+class Avatar(models.Model):
+    """头像商品"""
+    name = models.CharField(max_length=50, verbose_name="头像名称")
+    image = models.ImageField(upload_to=avatar_upload_path, verbose_name="头像图片")
+    price = models.PositiveIntegerField(verbose_name="价格（积分）")
+    is_default = models.BooleanField(default=False, verbose_name="是否默认头像（免费）")
+    description = models.CharField(max_length=200, blank=True, verbose_name="描述")
+    stock = models.IntegerField(null=True, blank=True, verbose_name="库存数量", help_text="留空表示无限库存")
+    is_available = models.BooleanField(default=True, verbose_name="是否上架")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    
+    class Meta:
+        verbose_name = "头像商品"
+        verbose_name_plural = "头像商品"
+        ordering = ['price', 'id']
+    
+    def __str__(self):
+        return f"{self.name} ({self.price}积分)"
+    
+    def has_stock(self):
+        """检查是否有库存"""
+        if self.stock is None:
+            return True  # 无限库存
+        return self.stock > 0
+    
+    def decrease_stock(self):
+        """减少库存"""
+        if self.stock is not None and self.stock > 0:
+            self.stock -= 1
+            self.save(update_fields=['stock'])
+
+
+class UserAvatar(models.Model):
+    """用户拥有的头像"""
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="user_avatars",
+        verbose_name="用户"
+    )
+    avatar = models.ForeignKey(
+        Avatar,
+        on_delete=models.CASCADE,
+        related_name="user_avatars",
+        verbose_name="头像"
+    )
+    is_current = models.BooleanField(default=False, verbose_name="是否当前使用")
+    purchased_at = models.DateTimeField(auto_now_add=True, verbose_name="购买时间")
+    
+    class Meta:
+        unique_together = ['user', 'avatar']  # 用户不能重复购买同一头像
+        verbose_name = "用户头像"
+        verbose_name_plural = "用户头像"
+        indexes = [
+            models.Index(fields=['user', 'is_current']),
+        ]
+    
+    def __str__(self):
+        return f"用户{self.user_id} - {self.avatar.name}"
+
+
+class RecheckInCard(models.Model):
+    """续签卡商品"""
+    name = models.CharField(max_length=50, default="续签卡", verbose_name="名称")
+    price = models.PositiveIntegerField(default=5, verbose_name="价格（积分）")
+    description = models.CharField(max_length=200, default="可以补签前一天未签到的记录", verbose_name="描述")
+    stock = models.IntegerField(null=True, blank=True, verbose_name="库存数量", help_text="留空表示无限库存")
+    is_available = models.BooleanField(default=True, verbose_name="是否上架")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    
+    class Meta:
+        verbose_name = "续签卡商品"
+        verbose_name_plural = "续签卡商品"
+    
+    def __str__(self):
+        return f"{self.name} ({self.price}积分)"
+    
+    def has_stock(self):
+        """检查是否有库存"""
+        if self.stock is None:
+            return True  # 无限库存
+        return self.stock > 0
+    
+    def decrease_stock(self, quantity=1):
+        """减少库存"""
+        if self.stock is not None and self.stock >= quantity:
+            self.stock -= quantity
+            self.save(update_fields=['stock'])
+
+
+class RenameCard(models.Model):
+    """改名卡商品"""
+    name = models.CharField(max_length=50, default="改名卡", verbose_name="名称")
+    price = models.PositiveIntegerField(default=1, verbose_name="价格（积分）")
+    description = models.CharField(max_length=200, default="可以修改一次用户昵称", verbose_name="描述")
+    stock = models.IntegerField(null=True, blank=True, verbose_name="库存数量", help_text="留空表示无限库存")
+    is_available = models.BooleanField(default=True, verbose_name="是否上架")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    
+    class Meta:
+        verbose_name = "改名卡商品"
+        verbose_name_plural = "改名卡商品"
+    
+    def __str__(self):
+        return f"{self.name} ({self.price}积分)"
+    
+    def has_stock(self):
+        """检查是否有库存"""
+        if self.stock is None:
+            return True  # 无限库存
+        return self.stock > 0
+    
+    def decrease_stock(self, quantity=1):
+        """减少库存"""
+        if self.stock is not None and self.stock >= quantity:
+            self.stock -= quantity
+            self.save(update_fields=['stock'])
+
+
+class UserRecheckInCard(models.Model):
+    """用户拥有的续签卡"""
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="recheckin_card",
+        verbose_name="用户"
+    )
+    quantity = models.PositiveIntegerField(default=0, verbose_name="数量")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+    
+    class Meta:
+        verbose_name = "用户续签卡"
+        verbose_name_plural = "用户续签卡"
+    
+    def __str__(self):
+        return f"用户{self.user_id} - {self.quantity}张续签卡"
+
+
+class UserRenameCard(models.Model):
+    """用户拥有的改名卡"""
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="rename_card",
+        verbose_name="用户"
+    )
+    quantity = models.PositiveIntegerField(default=0, verbose_name="数量")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+    
+    class Meta:
+        verbose_name = "用户改名卡"
+        verbose_name_plural = "用户改名卡"
+    
+    def __str__(self):
+        return f"用户{self.user_id} - {self.quantity}张改名卡"
+
+
+class PointsTransaction(models.Model):
+    """积分交易记录"""
+    TRANSACTION_TYPES = [
+        ('earn', '获得'),
+        ('spend', '消费'),
+    ]
+    
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="points_transactions",
+        verbose_name="用户"
+    )
+    transaction_type = models.CharField(
+        max_length=10,
+        choices=TRANSACTION_TYPES,
+        verbose_name="交易类型"
+    )
+    points = models.IntegerField(verbose_name="积分数量")  # 正数表示获得，负数表示消费
+    description = models.CharField(max_length=200, verbose_name="描述")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    
+    class Meta:
+        verbose_name = "积分交易记录"
+        verbose_name_plural = "积分交易记录"
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'created_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.user_id} - {self.get_transaction_type_display()} {abs(self.points)}积分 - {self.description}"
 
 

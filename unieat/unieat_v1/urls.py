@@ -14,7 +14,14 @@ from .views import (
     ConsumptionTrendView,
     ConsumptionRecordsView,
     ConsumptionRecordsDeleteView,
-    FeedbackView
+    FeedbackView,
+    SearchView,
+    CheckInView,
+    CheckInStatusView,
+    AvatarListView, UserAvatarListView, BuyAvatarView, SetCurrentAvatarView,
+    RecheckInCardView, UserRecheckInCardView, BuyRecheckInCardView,
+    RenameCardView, UserRenameCardView, BuyRenameCardView,
+    UseRecheckInCardView, PointsTransactionListView
 )
 
 # 用 DRF 的路由器注册 ViewSet
@@ -32,6 +39,9 @@ urlpatterns = [
     path('greeting/', greeting, name="greeting"),
     path('banners/upload/', BannerUploadView.as_view(), name='banner-upload'),
     path('banners/', BannerListView.as_view(), name='banner-list'),
+
+    # 搜索 - 放在 router 之前，确保优先级
+    path("search/", SearchView.as_view(), name="search"),
 
     # 通过 router 自动生成的接口
     path('', include(router.urls)),
@@ -55,4 +65,24 @@ urlpatterns = [
 
     # 反馈
     path("feedback/", FeedbackView.as_view(), name="feedback"),
+    
+    # 签到
+    path("checkin/", CheckInView.as_view(), name="checkin"),
+    path("checkin/status/", CheckInStatusView.as_view(), name="checkin-status"),
+    path("checkin/use-recheckin-card/", UseRecheckInCardView.as_view(), name="use-recheckin-card"),
+    
+    # 积分商城
+    path("shop/avatars/", AvatarListView.as_view(), name="shop-avatars"),
+    path("shop/buy-avatar/", BuyAvatarView.as_view(), name="buy-avatar"),
+    path("shop/recheckin-cards/", RecheckInCardView.as_view(), name="recheckin-cards"),
+    path("shop/buy-recheckin-card/", BuyRecheckInCardView.as_view(), name="buy-recheckin-card"),
+    path("shop/rename-cards/", RenameCardView.as_view(), name="rename-cards"),
+    path("shop/buy-rename-card/", BuyRenameCardView.as_view(), name="buy-rename-card"),
+    
+    # 用户相关（头像、续签卡、改名卡、积分记录）
+    path("user/avatars/", UserAvatarListView.as_view(), name="user-avatars"),
+    path("user/avatar/set-current/", SetCurrentAvatarView.as_view(), name="set-current-avatar"),
+    path("user/recheckin-cards/", UserRecheckInCardView.as_view(), name="user-recheckin-cards"),
+    path("user/rename-cards/", UserRenameCardView.as_view(), name="user-rename-cards"),
+    path("user/points/transactions/", PointsTransactionListView.as_view(), name="points-transactions"),
 ]

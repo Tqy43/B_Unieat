@@ -1,0 +1,59 @@
+version: '3.8'
+
+# Docker开发环境配置
+# 使用卷挂载实现代码实时同步，修改本地代码自动反映到容器中
+
+services:
+  # Django应用服务
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: unieat_web_dev
+    volumes:
+      # 挂载整个项目目录，实现代码实时同步
+      - .:/app
+      # 排除虚拟环境（使用容器内的Python环境）
+      - /app/venv
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=True
+      - USE_TZ=True
+      - TIME_ZONE=Asia/Shanghai
+      # 数据库配置（连接到db服务）
+      - DB_HOST=db
+      - DB_NAME=unieat
+      - DB_USER=unieat_user
+      - DB_PASSWORD=132318
+      - DB_PORT=3306
+    depends_on:
+      - db
+    command: >
+      sh -c "cd unieat &&
+             echo '等待数据库启动...' &&
+             sleep 5 &&
+             python manage.py migrate &&
+             echo '启动开发服务器...' &&
+             python manage.py runserver 0.0.0.0:8000"
+    restart: unless-stopped
+
+  # MySQL数据库
+  db:
+    image: mysql:8.0
+    container_name: unieat_db_dev
+    environment:
+      MYSQL_DATABASE: unieat
+      MYSQL_USER: unieat_user
+      MYSQL_PASSWORD: 132318
+      MYSQL_ROOT_PASSWORD: root_password
+    volumes:
+      - mysql_dev_data:/var/lib/mysql
+    ports:
+      - "3307:3306"  # 使用3307端口避免与本地MySQL冲突
+    restart: unless-stopped
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+
+volumes:
+  mysql_dev_data:
+

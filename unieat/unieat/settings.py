@@ -106,7 +106,7 @@ AUTH_PASSWORD_VALIDATORS = [
 LANGUAGE_CODE = env('LANGUAGE_CODE', default='zh-hans')
 TIME_ZONE = env('TIME_ZONE', default='Asia/Shanghai')
 USE_I18N = True
-USE_TZ = env('USE_TZ', default=False)
+USE_TZ = env('USE_TZ', default=True)  # 启用时区支持，确保使用中国时区
 
 # Static files (CSS, JavaScript, Images)
 STATIC_URL = env('STATIC_URL', default='/static/')
