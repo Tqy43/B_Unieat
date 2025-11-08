@@ -1,5 +1,6 @@
 # 标准库导入
 import os
+import logging
 import requests
 from datetime import datetime , timedelta
 from random import sample
@@ -11,7 +12,7 @@ from django.db import transaction
 from django.contrib.auth.models import User
 from django.utils.dateparse import parse_date
 from django.db.models import Q
-from django.db.models import Sum, Count, F
+from django.db.models import Sum, Count, F, Case, When, Value, IntegerField
 from django.utils.dateparse import parse_date
 from django.utils import timezone
 from django.core.paginator import Paginator
@@ -21,6 +22,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser
 from rest_framework import viewsets, status, permissions
+from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import action
 from rest_framework.generics import RetrieveAPIView
 from rest_framework.generics import ListAPIView
@@ -54,8 +56,25 @@ from .serializers import (
 )
 
 # 项目内部工具导入
-from .utils.wechat import jscode2session, WechatAuthError
+from .utils.wechat import (
+    jscode2session,
+    WechatAuthError,
+    msg_sec_check,
+    WechatServiceError,
+)
 from decimal import Decimal, ROUND_HALF_UP
+
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_FREE_AVATAR_ID = getattr(settings, "DEFAULT_FREE_AVATAR_ID", 9)
+
+
+def get_default_avatar():
+    avatar = Avatar.objects.filter(id=DEFAULT_FREE_AVATAR_ID).first()
+    if avatar:
+        return avatar
+    return Avatar.objects.filter(is_default=True).order_by('id').first()
 
 
 # 开屏广告页
@@ -453,36 +472,59 @@ class UserProfileView(APIView):
         if not profile:
             return Response({"detail": "User profile not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        nickname = request.data.get("nickname", profile.nickname)
+        raw_nickname = request.data.get("nickname")
+        nickname = raw_nickname if raw_nickname is not None else profile.nickname
         avatar_url = request.data.get("avatar_url")
         budget = request.data.get("budget", profile.budget)
 
-        # 检查是否需要消耗改名卡
+        nickname_changed = False
         if nickname and nickname != profile.nickname:
-            # 用户要修改昵称
-            # 检查是否是首次改名（nickname为空或等于默认值）
-            is_first_rename = not profile.nickname or profile.nickname.strip() == ''
-            
-            if not is_first_rename:
-                # 不是首次改名，需要消耗改名卡
-                user_rename_card, created = UserRenameCard.objects.get_or_create(user=request.user)
-                if user_rename_card.quantity < 1:
-                    return Response(
-                        {"detail": "改名卡数量不足，请先购买改名卡"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                # 消耗一张改名卡
-                user_rename_card.quantity -= 1
-                user_rename_card.save()
-                # 记录积分交易
-                PointsTransaction.objects.create(
-                    user=request.user,
-                    transaction_type='spend',
-                    points=0,  # 改名卡已消耗，不扣积分
-                    description=f'使用改名卡修改昵称: {profile.nickname} -> {nickname}'
-                )
+            nickname = nickname.strip()
+            if nickname == profile.nickname:
+                nickname_changed = False
+            else:
+                if not nickname:
+                    return Response({"detail": "昵称不能为空"}, status=status.HTTP_400_BAD_REQUEST)
 
-        profile.nickname = nickname
+                try:
+                    security_resp = msg_sec_check(openid=profile.openid, content=nickname)
+                except WechatServiceError as exc:
+                    logger.warning("微信昵称内容安全检测失败: %s", exc)
+                    return Response({"detail": "昵称校验失败，请稍后再试"}, status=status.HTTP_400_BAD_REQUEST)
+
+                suggest = security_resp.get("result", {}).get("suggest", "pass")
+                if suggest != "pass":
+                    return Response({"detail": "昵称包含违规内容，请修改后再试"}, status=status.HTTP_400_BAD_REQUEST)
+
+                nickname_changed = True
+
+                # 用户要修改昵称
+                # 检查是否是首次改名（nickname为空或等于默认值）
+                is_first_rename = not profile.nickname or profile.nickname.strip() == ''
+
+                if not is_first_rename:
+                    # 不是首次改名，需要消耗改名卡
+                    user_rename_card, created = UserRenameCard.objects.get_or_create(user=request.user)
+                    if user_rename_card.quantity < 1:
+                        return Response(
+                            {"detail": "改名卡数量不足，请先购买改名卡"},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                    # 消耗一张改名卡
+                    user_rename_card.quantity -= 1
+                    user_rename_card.save()
+                    # 记录积分交易
+                    PointsTransaction.objects.create(
+                        user=request.user,
+                        transaction_type='spend',
+                        points=0,  # 改名卡已消耗，不扣积分
+                        description=f'使用改名卡修改昵称: {profile.nickname} -> {nickname}'
+                    )
+
+        if nickname_changed:
+            profile.nickname = nickname
+        elif raw_nickname is not None and raw_nickname == "":
+            profile.nickname = ""
         profile.budget = budget
 
         # ✅ 如果传了微信头像 URL，下载并保存到 MEDIA_ROOT
@@ -1321,7 +1363,17 @@ class AvatarListView(APIView):
     permission_classes = [permissions.AllowAny]
     
     def get(self, request):
-        avatars = Avatar.objects.all()
+        avatars = (
+            Avatar.objects
+            .annotate(
+                is_free=Case(
+                    When(price=0, then=Value(1)),
+                    default=Value(0),
+                    output_field=IntegerField()
+                )
+            )
+            .order_by('-is_free', '-is_default', 'price', 'id')
+        )
         serializer = AvatarSerializer(avatars, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -1336,6 +1388,29 @@ class UserAvatarListView(APIView):
     
     def get(self, request):
         user = request.user
+        with transaction.atomic():
+            default_avatar = get_default_avatar()
+            user_avatars_qs = UserAvatar.objects.filter(user=user)
+            has_current = user_avatars_qs.filter(is_current=True).exists()
+
+            if default_avatar and not user_avatars_qs.filter(avatar=default_avatar).exists():
+                UserAvatar.objects.create(
+                    user=user,
+                    avatar=default_avatar,
+                    is_current=not has_current,
+                )
+                user_avatars_qs = UserAvatar.objects.filter(user=user)
+                has_current = user_avatars_qs.filter(is_current=True).exists()
+
+            if not has_current:
+                target_avatar = (
+                    user_avatars_qs.filter(avatar=default_avatar).first()
+                    if default_avatar else user_avatars_qs.first()
+                )
+                if target_avatar and not target_avatar.is_current:
+                    target_avatar.is_current = True
+                    target_avatar.save(update_fields=["is_current"])
+
         user_avatars = UserAvatar.objects.filter(user=user).select_related('avatar')
         serializer = UserAvatarSerializer(user_avatars, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1355,49 +1430,62 @@ class BuyAvatarView(APIView):
         if not avatar_id:
             return Response({"detail": "请提供头像ID"}, status=status.HTTP_400_BAD_REQUEST)
         
-        try:
-            avatar = Avatar.objects.get(id=avatar_id)
-        except Avatar.DoesNotExist:
-            return Response({"detail": "头像不存在"}, status=status.HTTP_404_NOT_FOUND)
-        
         user = request.user
         profile = getattr(user, "profile", None)
         if not profile:
             return Response({"detail": "用户资料不存在"}, status=status.HTTP_404_NOT_FOUND)
         
-        # 检查是否已拥有
-        if UserAvatar.objects.filter(user=user, avatar=avatar).exists():
-            return Response({"detail": "您已经拥有此头像"}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # 检查积分是否足够
-        if profile.points < avatar.price:
-            return Response({"detail": f"积分不足，需要{avatar.price}积分，当前拥有{profile.points}积分"}, 
-                          status=status.HTTP_400_BAD_REQUEST)
-        
-        # 默认头像免费
-        if avatar.is_default:
-            # 免费赠送，不需要扣积分
-            UserAvatar.objects.create(user=user, avatar=avatar, is_current=False)
-            return Response({
-                "message": "已获得默认头像",
-                "avatar": AvatarSerializer(avatar, context={'request': request}).data
-            }, status=status.HTTP_201_CREATED)
-        
-        # 扣除积分
-        profile.points -= avatar.price
-        profile.save(update_fields=["points", "updated_at"])
-        
-        # 创建用户头像记录
-        user_avatar = UserAvatar.objects.create(user=user, avatar=avatar, is_current=False)
-        
-        # 记录积分交易
-        PointsTransaction.objects.create(
-            user=user,
-            transaction_type='spend',
-            points=-avatar.price,
-            description=f"购买头像：{avatar.name}"
-        )
-        
+        with transaction.atomic():
+            try:
+                avatar = Avatar.objects.select_for_update().get(id=avatar_id)
+            except Avatar.DoesNotExist:
+                return Response({"detail": "头像不存在"}, status=status.HTTP_404_NOT_FOUND)
+
+            profile = UserProfile.objects.select_for_update().get(pk=profile.pk)
+            user_avatar = UserAvatar.objects.select_for_update().filter(user=user, avatar=avatar).first()
+
+            # 默认头像走免费逻辑，同时允许用户重新设置为当前头像
+            if avatar.id == DEFAULT_FREE_AVATAR_ID or avatar.is_default:
+                if not user_avatar:
+                    user_avatar = UserAvatar.objects.create(user=user, avatar=avatar, is_current=False)
+
+                if not user_avatar.is_current:
+                    UserAvatar.objects.filter(user=user, is_current=True).exclude(id=user_avatar.id).update(is_current=False)
+                    user_avatar.is_current = True
+                    user_avatar.save(update_fields=["is_current"])
+
+                serializer = UserAvatarSerializer(user_avatar, context={'request': request})
+                return Response({
+                    "message": "已切换为默认头像",
+                    "user_avatar": serializer.data
+                }, status=status.HTTP_200_OK)
+
+            if user_avatar:
+                return Response({"detail": "您已经拥有此头像"}, status=status.HTTP_400_BAD_REQUEST)
+
+            if not avatar.has_stock():
+                return Response({"detail": "该头像已售罄"}, status=status.HTTP_400_BAD_REQUEST)
+
+            if profile.points < avatar.price:
+                return Response({"detail": f"积分不足，需要{avatar.price}积分，当前拥有{profile.points}积分"},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+            profile.points -= avatar.price
+            profile.save(update_fields=["points", "updated_at"])
+
+            user_avatar = UserAvatar.objects.create(user=user, avatar=avatar, is_current=False)
+            try:
+                avatar.decrease_stock()
+            except ValueError:
+                raise ValidationError({"detail": "该头像已售罄"})
+
+            PointsTransaction.objects.create(
+                user=user,
+                transaction_type='spend',
+                points=-avatar.price,
+                description=f"购买头像：{avatar.name}"
+            )
+
         serializer = UserAvatarSerializer(user_avatar, context={'request': request})
         return Response({
             "message": "购买成功",
@@ -1422,18 +1510,19 @@ class SetCurrentAvatarView(APIView):
         
         user = request.user
         
-        # 检查用户是否拥有此头像
-        try:
-            user_avatar = UserAvatar.objects.get(user=user, avatar_id=avatar_id)
-        except UserAvatar.DoesNotExist:
-            return Response({"detail": "您尚未拥有此头像"}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # 取消其他头像的当前状态
-        UserAvatar.objects.filter(user=user, is_current=True).update(is_current=False)
-        
-        # 设置当前头像
-        user_avatar.is_current = True
-        user_avatar.save(update_fields=["is_current"])
+        with transaction.atomic():
+            try:
+                user_avatar = UserAvatar.objects.select_for_update().get(user=user, avatar_id=avatar_id)
+            except UserAvatar.DoesNotExist:
+                default_avatar = Avatar.objects.filter(id=avatar_id).first()
+                if not default_avatar or (default_avatar.id != DEFAULT_FREE_AVATAR_ID and not default_avatar.is_default):
+                    return Response({"detail": "您尚未拥有此头像"}, status=status.HTTP_400_BAD_REQUEST)
+                user_avatar = UserAvatar.objects.create(user=user, avatar=default_avatar, is_current=False)
+
+            UserAvatar.objects.filter(user=user, is_current=True).exclude(id=user_avatar.id).update(is_current=False)
+            if not user_avatar.is_current:
+                user_avatar.is_current = True
+                user_avatar.save(update_fields=["is_current"])
         
         serializer = UserAvatarSerializer(user_avatar, context={'request': request})
         return Response({

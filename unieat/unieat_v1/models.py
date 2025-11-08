@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import F
 from datetime import time
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -300,11 +301,20 @@ class Avatar(models.Model):
             return True  # 无限库存
         return self.stock > 0
     
-    def decrease_stock(self):
+    def decrease_stock(self, quantity=1):
         """减少库存"""
-        if self.stock is not None and self.stock > 0:
-            self.stock -= 1
-            self.save(update_fields=['stock'])
+        if self.stock is None or quantity <= 0:
+            return
+        if self.stock < quantity:
+            raise ValueError("库存不足，无法扣减")
+        updated = (
+            Avatar.objects
+            .filter(pk=self.pk, stock__gte=quantity)
+            .update(stock=F('stock') - quantity)
+        )
+        if not updated:
+            raise ValueError("库存不足，无法扣减")
+        self.refresh_from_db(fields=['stock'])
 
 
 class UserAvatar(models.Model):

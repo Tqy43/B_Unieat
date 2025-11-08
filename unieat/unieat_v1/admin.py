@@ -1,4 +1,7 @@
 from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.auth.models import User
+from django import forms
 from .models import (
     Welcome, Banner, Canteen, Stall, Dish, UserProfile, 
     ConsumptionRecord, ConsumptionItem, Feedback, CheckInRecord,
@@ -14,6 +17,138 @@ class BannerAdmin(admin.ModelAdmin):
     ordering = ('-order', '-uploaded_at')
 
 admin.site.register(Canteen)
+
+
+class UserAvatarInlineFormSet(forms.BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        selected = 0
+        for form in self.forms:
+            if not hasattr(form, "cleaned_data"):
+                continue
+            if form.cleaned_data.get('DELETE'):
+                continue
+            if form.cleaned_data.get('is_current'):
+                selected += 1
+        if selected > 1:
+            raise forms.ValidationError("只能设置一个“当前”头像。")
+
+
+class UserAvatarInline(admin.TabularInline):
+    model = UserAvatar
+    formset = UserAvatarInlineFormSet
+    fk_name = 'user'
+    extra = 0
+    fields = ('avatar', 'is_current', 'purchased_at')
+    readonly_fields = ('purchased_at',)
+    autocomplete_fields = ('avatar',)
+
+
+class UserRecheckInCardInline(admin.StackedInline):
+    model = UserRecheckInCard
+    fk_name = 'user'
+    can_delete = False
+    extra = 0
+    fields = ('quantity',)
+    max_num = 1
+
+    def get_extra(self, request, obj=None, **kwargs):
+        if obj and hasattr(obj, 'recheckin_card'):
+            return 0
+        return 1
+
+
+class UserRenameCardInline(admin.StackedInline):
+    model = UserRenameCard
+    fk_name = 'user'
+    can_delete = False
+    extra = 0
+    fields = ('quantity',)
+    max_num = 1
+
+    def get_extra(self, request, obj=None, **kwargs):
+        if obj and hasattr(obj, 'rename_card'):
+            return 0
+        return 1
+
+
+class CustomUserAdmin(BaseUserAdmin):
+    inlines = [UserAvatarInline, UserRecheckInCardInline, UserRenameCardInline]
+
+    def save_formset(self, request, form, formset, change):
+        super().save_formset(request, form, formset, change)
+        if formset.model == UserAvatar and form.instance:
+            selected_ids = []
+            for inline_form in formset.forms:
+                if not hasattr(inline_form, "cleaned_data"):
+                    continue
+                if inline_form.cleaned_data.get('DELETE'):
+                    continue
+                if inline_form.cleaned_data.get('is_current'):
+                    instance = inline_form.instance
+                    if instance.pk:
+                        selected_ids.append(instance.pk)
+            if selected_ids:
+                UserAvatar.objects.filter(user=form.instance).exclude(pk__in=selected_ids).update(is_current=False)
+
+
+try:
+    admin.site.unregister(User)
+except admin.sites.NotRegistered:
+    pass
+admin.site.register(User, CustomUserAdmin)
+
+
+@admin.register(UserAvatar)
+class UserAvatarAdmin(admin.ModelAdmin):
+    """用户头像拥有记录"""
+    list_display = ('id', 'user', 'avatar', 'is_current', 'purchased_at')
+    list_filter = ('is_current', 'avatar__is_default', 'purchased_at')
+    search_fields = ('user__username', 'user__profile__nickname', 'avatar__name')
+    ordering = ('user', '-is_current', '-purchased_at')
+    readonly_fields = ('purchased_at',)
+    autocomplete_fields = ('user', 'avatar')
+    list_editable = ('is_current',)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related('user', 'avatar', 'user__profile')
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        if obj.is_current:
+            UserAvatar.objects.filter(user=obj.user).exclude(pk=obj.pk).update(is_current=False)
+
+
+@admin.register(UserRecheckInCard)
+class UserRecheckInCardAdmin(admin.ModelAdmin):
+    """用户续签卡拥有记录"""
+    list_display = ('id', 'user', 'quantity', 'updated_at')
+    search_fields = ('user__username', 'user__profile__nickname')
+    ordering = ('user', '-updated_at')
+    readonly_fields = ('updated_at',)
+    autocomplete_fields = ('user',)
+    list_editable = ('quantity',)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related('user', 'user__profile')
+
+
+@admin.register(UserRenameCard)
+class UserRenameCardAdmin(admin.ModelAdmin):
+    """用户改名卡拥有记录"""
+    list_display = ('id', 'user', 'quantity', 'updated_at')
+    search_fields = ('user__username', 'user__profile__nickname')
+    ordering = ('user', '-updated_at')
+    readonly_fields = ('updated_at',)
+    autocomplete_fields = ('user',)
+    list_editable = ('quantity',)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related('user', 'user__profile')
+
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
@@ -305,26 +440,6 @@ class AvatarAdmin(admin.ModelAdmin):
     image_preview_large.allow_tags = True
 
 
-# 用户头像、续签卡、改名卡已集成到UserProfile，不再单独显示
-# 如需单独管理，可以取消注释以下代码
-# @admin.register(UserAvatar)
-# class UserAvatarAdmin(admin.ModelAdmin):
-#     """用户头像拥有记录"""
-#     list_display = ('id', 'user', 'get_user_nickname', 'avatar', 'is_current', 'purchased_at')
-#     list_filter = ('is_current', 'purchased_at')
-#     search_fields = ('user__username', 'user__profile__nickname', 'avatar__name')
-#     ordering = ('-purchased_at',)
-#     readonly_fields = ('purchased_at',)
-#     
-#     def get_user_nickname(self, obj):
-#         """显示用户昵称"""
-#         profile = getattr(obj.user, 'profile', None)
-#         if profile and profile.nickname:
-#             return profile.nickname
-#         return obj.user.username
-#     get_user_nickname.short_description = '用户昵称'
-
-
 @admin.register(RecheckInCard)
 class RecheckInCardAdmin(admin.ModelAdmin):
     """续签卡商品管理"""
@@ -364,25 +479,6 @@ class RecheckInCardAdmin(admin.ModelAdmin):
     stock_display.allow_tags = True
 
 
-# 用户续签卡已集成到UserProfile，不再单独显示
-# @admin.register(UserRecheckInCard)
-# class UserRecheckInCardAdmin(admin.ModelAdmin):
-#     """用户续签卡拥有记录"""
-#     list_display = ('id', 'user', 'get_user_nickname', 'quantity', 'updated_at')
-#     search_fields = ('user__username', 'user__profile__nickname')
-#     ordering = ('-quantity', '-updated_at')
-#     readonly_fields = ('updated_at',)
-#     list_filter = ('updated_at',)
-#     
-#     def get_user_nickname(self, obj):
-#         """显示用户昵称"""
-#         profile = getattr(obj.user, 'profile', None)
-#         if profile and profile.nickname:
-#             return profile.nickname
-#         return obj.user.username
-#     get_user_nickname.short_description = '用户昵称'
-
-
 @admin.register(RenameCard)
 class RenameCardAdmin(admin.ModelAdmin):
     """改名卡商品管理"""
@@ -419,25 +515,6 @@ class RenameCardAdmin(admin.ModelAdmin):
             return '<span style="color: red; font-weight: bold;">售罄</span>'
     stock_display.short_description = '库存'
     stock_display.allow_tags = True
-
-
-# 用户改名卡已集成到UserProfile，不再单独显示
-# @admin.register(UserRenameCard)
-# class UserRenameCardAdmin(admin.ModelAdmin):
-#     """用户改名卡拥有记录"""
-#     list_display = ('id', 'user', 'get_user_nickname', 'quantity', 'updated_at')
-#     search_fields = ('user__username', 'user__profile__nickname')
-#     ordering = ('-quantity', '-updated_at')
-#     readonly_fields = ('updated_at',)
-#     list_filter = ('updated_at',)
-#     
-#     def get_user_nickname(self, obj):
-#         """显示用户昵称"""
-#         profile = getattr(obj.user, 'profile', None)
-#         if profile and profile.nickname:
-#             return profile.nickname
-#         return obj.user.username
-#     get_user_nickname.short_description = '用户昵称'
 
 
 @admin.register(PointsTransaction)
