@@ -11,7 +11,7 @@ from .views import (
     ConsumptionRecordViewSet,
     ConsumptionSummaryView,
     TopSalesView,
-    ConsumptionTrendView,
+    ConsumptionTrendView, ConsumptionTrendCompositionView,
     ConsumptionRecordsView,
     ConsumptionRecordsDeleteView,
     FeedbackView,
@@ -21,7 +21,8 @@ from .views import (
     AvatarListView, UserAvatarListView, BuyAvatarView, SetCurrentAvatarView,
     RecheckInCardView, UserRecheckInCardView, BuyRecheckInCardView,
     RenameCardView, UserRenameCardView, BuyRenameCardView,
-    UseRecheckInCardView, PointsTransactionListView
+    UseRecheckInCardView, PointsTransactionListView,
+    ShareGiftActivityView
 )
 
 # 用 DRF 的路由器注册 ViewSet
@@ -60,6 +61,7 @@ urlpatterns = [
     path('consumption/summary/', ConsumptionSummaryView.as_view(), name='consumption-summary'),
     path('shops/top_sales/', TopSalesView.as_view(), name='top-sales'),
     path('consumption/trend/', ConsumptionTrendView.as_view(), name='consumption-trend'),
+    path('consumption/trend/composition/', ConsumptionTrendCompositionView.as_view(), name='consumption-trend-composition'),
     path('consumption/records/', ConsumptionRecordsView.as_view(), name='consumption-records'),
     path('consumption/delete/', ConsumptionRecordsDeleteView.as_view(), name='consumption-records-delete'),
 
@@ -85,4 +87,7 @@ urlpatterns = [
     path("user/recheckin-cards/", UserRecheckInCardView.as_view(), name="user-recheckin-cards"),
     path("user/rename-cards/", UserRenameCardView.as_view(), name="user-rename-cards"),
     path("user/points/transactions/", PointsTransactionListView.as_view(), name="points-transactions"),
+
+    # 活动
+    path("activity/share-gift/", ShareGiftActivityView.as_view(), name="share-gift-activity"),
 ]

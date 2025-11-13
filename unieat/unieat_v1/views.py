@@ -2,7 +2,7 @@
 import os
 import logging
 import requests
-from datetime import datetime , timedelta
+from datetime import datetime, timedelta, time as dt_time
 from random import sample
 
 # Django核心模块导入
@@ -13,9 +13,10 @@ from django.contrib.auth.models import User
 from django.utils.dateparse import parse_date
 from django.db.models import Q
 from django.db.models import Sum, Count, F, Case, When, Value, IntegerField
+from django.db.models.functions import TruncDate
 from django.utils.dateparse import parse_date
 from django.utils import timezone
-from django.core.paginator import Paginator
+from django.core.paginator import Paginator, EmptyPage
 
 # DRF相关模块导入
 from rest_framework.views import APIView
@@ -864,24 +865,162 @@ class ConsumptionTrendView(APIView):
     
     def get(self, request):
         user = request.user
-        time_range = request.query_params.get('time_range', 'week')
+        time_range = request.query_params.get('time_range', 'week').lower()
+        metric = request.query_params.get('metric', 'count').lower()
         
         if time_range == 'week':
-            start_date = timezone.now() - timedelta(days=7)
+            days = 7
         else:
-            start_date = timezone.now() - timedelta(days=30)
-            
-        trends = ConsumptionRecord.objects.filter(
-            user=user,
-            consumed_at__gte=start_date
-        ).values(
-            'stall__name'
-        ).annotate(
-            value=Count('id')
-        ).order_by('-value')[:5]
+            time_range = 'month'  # 统一其它值为month
+            days = 30
         
-        return Response(trends)
+        if metric == 'amount':
+            aggregator = Sum('total_amount')
+        else:
+            metric = 'count'
+            aggregator = Count('id')
+        
+        if settings.USE_TZ:
+            now = timezone.localtime()
+        else:
+            now = datetime.now()
+        
+        start_datetime = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_datetime = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+        records = (
+            ConsumptionRecord.objects
+            .filter(
+                user=user,
+                consumed_at__gte=start_datetime,
+                consumed_at__lte=end_datetime,
+            )
+            .annotate(date=TruncDate('consumed_at'))
+            .values('date')
+            .annotate(value=aggregator)
+            .order_by('date')
+        )
+        
+        stats_by_date = {}
+        for item in records:
+            date_key = item.get('date')
+            if isinstance(date_key, datetime):
+                date_key = date_key.date()
+            stats_by_date[date_key] = item.get('value', 0)
+        
+        trend_data = []
+        total_value = Decimal('0')
+        for i in range(days):
+            current_date = (start_datetime.date() + timedelta(days=i))
+            raw_value = stats_by_date.get(current_date, 0) or 0
+            if metric == 'amount':
+                decimal_value = Decimal(str(raw_value))
+                total_value += decimal_value
+                value = float(decimal_value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+            else:
+                int_value = int(raw_value)
+                total_value += Decimal(int_value)
+                value = int_value
+            trend_data.append({
+                'date': current_date.isoformat(),
+                'label': current_date.strftime('%m-%d'),
+                'value': value,
+            })
+        
+        return Response({
+            'time_range': time_range,
+            'metric': metric,
+            'total': float(total_value) if metric == 'amount' else int(total_value),
+            'results': trend_data,
+        })
  
+# 饼图：消费构成
+class ConsumptionTrendCompositionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        time_range = request.query_params.get('time_range', 'week').lower()
+        metric = request.query_params.get('metric', 'count').lower()
+
+        if time_range == 'week':
+            if settings.USE_TZ:
+                now = timezone.localtime()
+            else:
+                now = datetime.now()
+            start_of_week = now - timedelta(days=now.weekday())
+            start_datetime = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_datetime = start_datetime + timedelta(days=7)
+        else:
+            time_range = 'month'
+            if settings.USE_TZ:
+                now = timezone.localtime()
+            else:
+                now = datetime.now()
+            start_datetime = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if start_datetime.month == 12:
+                next_month_start = start_datetime.replace(year=start_datetime.year + 1, month=1, day=1)
+            else:
+                next_month_start = start_datetime.replace(month=start_datetime.month + 1, day=1)
+            end_datetime = next_month_start
+
+        if metric == 'amount':
+            aggregator = Sum('total_amount')
+        else:
+            metric = 'count'
+            aggregator = Count('id')
+
+        records = (
+            ConsumptionRecord.objects
+            .filter(
+                user=user,
+                consumed_at__gte=start_datetime,
+                consumed_at__lt=end_datetime,
+            )
+            .values('stall__name')
+            .annotate(value=aggregator)
+            .order_by('-value')
+        )
+
+        composition = []
+        if metric == 'amount':
+            total_value = Decimal('0')
+            for item in records:
+                raw_value = Decimal(str(item.get('value') or 0))
+                total_value += raw_value
+            total_value = total_value.quantize(Decimal('0.01'))
+            for item in records:
+                stall_name = item.get('stall__name') or '未指定档口'
+                raw_value = Decimal(str(item.get('value') or 0)).quantize(Decimal('0.01'))
+                percentage = (raw_value / total_value * Decimal('100')).quantize(Decimal('0.01')) if total_value > 0 else Decimal('0.00')
+                composition.append({
+                    'stall': stall_name,
+                    'value': float(raw_value),
+                    'percentage': float(percentage),
+                })
+            total_output = float(total_value)
+        else:
+            total_value = 0
+            for item in records:
+                total_value += int(item.get('value') or 0)
+            for item in records:
+                stall_name = item.get('stall__name') or '未指定档口'
+                raw_value = int(item.get('value') or 0)
+                percentage = round(raw_value / total_value * 100, 2) if total_value > 0 else 0.0
+                composition.append({
+                    'stall': stall_name,
+                    'value': raw_value,
+                    'percentage': percentage,
+                })
+            total_output = total_value
+
+        return Response({
+            'time_range': time_range,
+            'metric': metric,
+            'total': total_output,
+            'results': composition,
+        })
+
 # ... existing code ...
 class ConsumptionRecordsView(ListAPIView):
     permission_classes = [IsAuthenticated]
@@ -896,15 +1035,34 @@ class ConsumptionRecordsView(ListAPIView):
             canteenInfo=F('stall__canteen__name')
         )
         
+        # 预设时间筛选（all/month/week/day）
+        filter_type = self.request.query_params.get('filter', 'all')
+        filter_type = filter_type.lower()
+        if filter_type in ('day', 'week', 'month'):
+            if settings.USE_TZ:
+                current_time = timezone.localtime()
+            else:
+                current_time = datetime.now()
+            if filter_type == 'day':
+                start_time = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_time = start_time + timedelta(days=1)
+            elif filter_type == 'week':
+                start_of_week = current_time - timedelta(days=current_time.weekday())
+                start_time = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_time = start_time + timedelta(days=7)
+            else:  # month
+                start_time = current_time.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                if start_time.month == 12:
+                    end_time = start_time.replace(year=start_time.year + 1, month=1)
+                else:
+                    end_time = start_time.replace(month=start_time.month + 1)
+            queryset = queryset.filter(consumed_at__gte=start_time, consumed_at__lt=end_time)
+        
         # 处理日期筛选参数
         date_from = self.request.query_params.get('date_from')
         date_to = self.request.query_params.get('date_to')
         
-        # 导入必要的模块
-        from datetime import datetime, time as dt_time
-        from django.conf import settings
         from zoneinfo import ZoneInfo
-        import logging
         logger = logging.getLogger(__name__)
         
         if date_from:
@@ -967,8 +1125,20 @@ class ConsumptionRecordsView(ListAPIView):
         logger.info(f"消费记录筛选后总数: {total_count}, pageStart: {page_start}, pageSize: {page_size}")
         logger.info(f"筛选参数: date_from={request.query_params.get('date_from')}, date_to={request.query_params.get('date_to')}")
         
+        if total_count == 0:
+            return Response({
+                'total': 0,
+                'records': []
+            })
+        
         paginator = Paginator(queryset, page_size)
-        page = paginator.page(page_start // page_size + 1)
+        try:
+            page = paginator.page(page_start // page_size + 1)
+        except EmptyPage:
+            return Response({
+                'total': total_count,
+                'records': []
+            })
         
         serializer = self.get_serializer(page, many=True)
         
@@ -1787,6 +1957,114 @@ class BuyRenameCardView(APIView):
             "quantity": quantity,
             "remaining_points": profile.points,
             "total_cards": user_card.quantity
+        }, status=status.HTTP_201_CREATED)
+
+
+class ShareGiftActivityView(APIView):
+    """
+    分享好礼活动
+    GET /api/activity/share-gift/  -> 获取活动状态
+    POST /api/activity/share-gift/ -> 领取首次分享奖励
+    """
+    permission_classes = [IsAuthenticated]
+
+    SHARE_REWARD_POINTS = 10
+    SHARE_ACTIVITY_DESCRIPTION = "分享好礼活动奖励"
+
+    def _get_profile(self, user):
+        profile = getattr(user, "profile", None)
+        if profile:
+            return profile
+        return None
+
+    def get(self, request):
+        user = request.user
+        profile = self._get_profile(user)
+        if not profile:
+            return Response({"detail": "用户资料不存在"}, status=status.HTTP_404_NOT_FOUND)
+
+        share_qs = PointsTransaction.objects.filter(
+            user=user,
+            transaction_type='earn',
+            description=self.SHARE_ACTIVITY_DESCRIPTION
+        )
+        already_claimed = share_qs.exists()
+        share_count = share_qs.count()
+        logger.info(
+            "ShareGiftActivityView.get user=%s exists=%s count=%s total_points=%s",
+            user.id,
+            already_claimed,
+            share_count,
+            profile.points
+        )
+
+        return Response({
+            "title": "分享好礼活动",
+            "description": "将小程序分享给好友即可获得一次性积分奖励。",
+            "reward_points": self.SHARE_REWARD_POINTS,
+            "already_claimed": already_claimed,
+            "can_share_multiple_times": True,
+            "claim_limit": 1,
+            "total_points": profile.points or 0
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        user = request.user
+        profile = self._get_profile(user)
+        if not profile:
+            return Response({"detail": "用户资料不存在"}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            try:
+                locked_profile = UserProfile.objects.select_for_update().get(pk=profile.pk)
+            except Exception:
+                locked_profile = UserProfile.objects.get(pk=profile.pk)
+
+            share_qs = PointsTransaction.objects.filter(
+                user=user,
+                transaction_type='earn',
+                description=self.SHARE_ACTIVITY_DESCRIPTION
+            )
+            already_claimed = share_qs.exists()
+
+            if already_claimed:
+                logger.info(
+                    "ShareGiftActivityView.post user=%s already_claimed=True total_points=%s share_count=%s",
+                    user.id,
+                    locked_profile.points,
+                    share_qs.count()
+                )
+                locked_profile.refresh_from_db(fields=["points"])
+                return Response({
+                    "message": "感谢分享，奖励已领取",
+                    "points_awarded": 0,
+                    "already_claimed": True,
+                    "total_points": locked_profile.points,
+                    "reward_points": self.SHARE_REWARD_POINTS
+                }, status=status.HTTP_200_OK)
+
+            locked_profile.points = (locked_profile.points or 0) + self.SHARE_REWARD_POINTS
+            locked_profile.save(update_fields=["points", "updated_at"])
+
+            PointsTransaction.objects.create(
+                user=user,
+                transaction_type='earn',
+                points=self.SHARE_REWARD_POINTS,
+                description=self.SHARE_ACTIVITY_DESCRIPTION
+            )
+            logger.info(
+                "ShareGiftActivityView.post user=%s award=%s new_total=%s",
+                user.id,
+                self.SHARE_REWARD_POINTS,
+                locked_profile.points
+            )
+
+        return Response({
+            "message": "分享成功，已获得积分奖励",
+            "points_awarded": self.SHARE_REWARD_POINTS,
+            "already_claimed": True,
+            "total_points": locked_profile.points,
+            "reward_points": self.SHARE_REWARD_POINTS
         }, status=status.HTTP_201_CREATED)
 
 
